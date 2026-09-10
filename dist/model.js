@@ -1,10 +1,13 @@
 export const MONTHS=['January','February','March','April','May','June','July','August'];
 export const FIELDS=['Forecast','Consumption','Issues','Receipts','Closing Stock'];
 export const HEADERS=['Commodity','Programme','Month',...FIELDS];
+export const PROGRAMMES=['Family planning','Maternal health','Vaccines','Essential medicines','MedSurg','ARV','Malaria','Renal','Nutrition','Cancer'];
+export const commodityKey=(name,programme)=>JSON.stringify([programme,name.toLowerCase()]);
+const PROGRAMME_ALIASES={fp:'Family planning',familyplanningcommodities:'Family planning',mh:'Maternal health',maternal:'Maternal health',maternalhealthcommodities:'Maternal health',vaccine:'Vaccines',immunisation:'Vaccines',immunization:'Vaccines',epi:'Vaccines',essentialmedicine:'Essential medicines',em:'Essential medicines',medsurge:'MedSurg',medicalsurgical:'MedSurg',medicalsurgicalsupplies:'MedSurg',medicalandsurgicalsupplies:'MedSurg',medicalandsurgical:'MedSurg',arvs:'ARV',antiretroviral:'ARV',antiretrovirals:'ARV',oncology:'Cancer',unclassified:'Unclassified'};
 export const normalise=value=>String(value??'').trim().toLowerCase().replace(/[^a-z0-9]/g,'');
 export function classify(name,programme=''){
  const p=normalise(programme);
- if(p){if(['fp','familyplanning','familyplanningcommodities'].includes(p))return 'Family planning';if(['mh','maternalhealth','maternal','maternalhealthcommodities'].includes(p))return 'Maternal health';if(p==='unclassified')return 'Unclassified';throw new Error(`Unknown programme “${programme}”. Use Family planning or Maternal health (or leave blank for classification).`);}
+ if(p){const matched=PROGRAMMES.find(value=>normalise(value)===p)||PROGRAMME_ALIASES[p];if(matched)return matched;throw new Error(`Unknown programme “${programme}”. Use ${PROGRAMMES.join(', ')} or Unclassified.`);}
  if(/oxytocin|tranexamic|magnesium\s*(sulphate|sulfate)|misoprostol|carbetocin|ergometrine|methylergometrine/i.test(name))return 'Maternal health';
  if(/condom|contracept|depo.?provera|dmpa|medroxyprogesterone|sayana|jadelle|implanon|nexplanon|levonorgestrel|etonogestrel|iud|iucd|intrauterine|ethinyl\s*estradiol|ethinylestradiol|microgynon|microlut/i.test(name))return 'Family planning';
  return 'Unclassified';
@@ -33,7 +36,7 @@ export function parseNumber(value,field){
  const n=Number(text.replace(/,/g,''));if(!Number.isFinite(n)||n<0)throw new Error(`${field} must be a non-negative number or blank.`);return n;
 }
 export function parseSheets(sheets){
- const rows=[],errors=[],warnings=[],seen=new Set(),programmes=new Map(),names=new Map();let matchedSheets=0;
+ const rows=[],errors=[],warnings=[],seen=new Set(),names=new Map();let matchedSheets=0;
  for(const sheet of sheets){
   const data=sheet.data;const headerIndex=data.findIndex(row=>['commodity','month','forecast'].every(key=>row.some(v=>normalise(v)===key)));
   if(headerIndex<0){warnings.push(`${sheet.name}: skipped (Commodity, Month and Forecast headers not found).`);continue;}matchedSheets++;
@@ -44,12 +47,11 @@ export function parseSheets(sheets){
    const raw=data[i];if(!raw.some(v=>v!==null&&v!==undefined&&String(v).trim()!==''))continue;
    try{
     const commodity=String(raw[indexes.Commodity]??'').trim().replace(/\s+/g,' ');if(!commodity)throw new Error('Commodity is required.');
-    const programme=classify(commodity,raw[indexes.Programme]);const month=parseMonth(raw[indexes.Month]);const key=commodity.toLowerCase();
+    const programme=classify(commodity,raw[indexes.Programme]);const month=parseMonth(raw[indexes.Month]);const key=commodityKey(commodity,programme);
     if(seen.has(`${key}|${month}`))throw new Error(`Duplicate ${commodity} / ${MONTHS[month-1]}. Combine source records in consistent units before importing.`);
-    if(programmes.has(key)&&programmes.get(key)!==programme)throw new Error(`Conflicting programme for ${commodity}.`);
     const row={commodity:names.get(key)??commodity,programme,month};for(const field of FIELDS)row[field]=parseNumber(raw[indexes[field]],field);
     if(FIELDS.every(f=>row[f]===null))throw new Error('No quantities entered; remove unused template rows.');
-    programmes.set(key,programme);names.set(key,row.commodity);seen.add(`${key}|${month}`);rows.push(row);
+    names.set(key,row.commodity);seen.add(`${key}|${month}`);rows.push(row);
    }catch(error){errors.push(`${sheet.name}, row ${i+1}: ${error.message}`);}
   }
  }
@@ -58,22 +60,24 @@ export function parseSheets(sheets){
  return {rows,errors,warnings};
 }
 export const sum=values=>{const valid=values.filter(v=>v!==null&&v!==undefined);return valid.length?valid.reduce((s,v)=>s+v,0):null;};
-export function analyseCommodity(allRows,name,start=1,end=8,low=3,high=6){
- const all=allRows.filter(r=>r.commodity.toLowerCase()===name.toLowerCase());const rows=all.filter(r=>r.month>=start&&r.month<=end).sort((a,b)=>a.month-b.month);
+export function analyseCommodity(allRows,name,start=1,end=8,low=3,high=6,programme=undefined){
+ const candidates=allRows.filter(r=>r.commodity.toLowerCase()===name.toLowerCase());
+ if(programme===undefined&&new Set(candidates.map(r=>r.programme)).size>1)throw new Error('Programme is required when a commodity belongs to multiple programmes.');
+ const all=candidates.filter(r=>programme===undefined||r.programme===programme);const rows=all.filter(r=>r.month>=start&&r.month<=end).sort((a,b)=>a.month-b.month);
  const pairs=rows.filter(r=>r.Forecast!==null&&r.Consumption!==null);const actual=sum(pairs.map(r=>r.Consumption)),forecast=sum(pairs.map(r=>r.Forecast));
  const errors=sum(pairs.map(r=>Math.abs(r.Consumption-r.Forecast)));const variance=pairs.length?actual-forecast:null;const accuracy=actual>0?Math.max(0,1-errors/actual)*100:null;
  const final=all.find(r=>r.month===end);const windowStart=Math.max(1,end-2);const window=all.filter(r=>r.month>=windowStart&&r.month<=end&&r.Consumption!==null);const amc=window.length===end-windowStart+1?sum(window.map(r=>r.Consumption))/window.length:null;
  const stock=final?.['Closing Stock']??null;const mos=stock!==null&&amc>0?stock/amc:null;
  const complete=pairs.length===end-start+1;const needsData=!complete||mos===null||rows.some(r=>FIELDS.some(f=>r[f]===null))||all[0]?.programme==='Unclassified';
  let status='In range',tone='good';if(stock===0){status='No closing stock';tone='danger';}else if(mos!==null&&mos<low){status='Low stock';tone='danger';}else if(mos!==null&&mos>high){status='High stock';tone='warning';}else if(accuracy!==null&&accuracy<80){status='Forecast mismatch';tone='warning';}else if(needsData||accuracy===null){status='Data review';tone='neutral';}
- return {name,programme:all[0]?.programme??'Unclassified',rows,pairs:pairs.length,expected:end-start+1,complete,needsData,totals:Object.fromEntries(FIELDS.map(f=>[f,f==='Closing Stock'?stock:sum(rows.map(r=>r[f]))])),counts:Object.fromEntries(FIELDS.map(f=>[f,rows.filter(r=>r[f]!==null).length])),variance,variancePct:forecast>0?variance/forecast*100:null,accuracy,mos,stock,amc,status,tone,end};
+ return {key:commodityKey(name,all[0]?.programme??programme??'Unclassified'),name,programme:all[0]?.programme??programme??'Unclassified',rows,pairs:pairs.length,expected:end-start+1,complete,needsData,totals:Object.fromEntries(FIELDS.map(f=>[f,f==='Closing Stock'?stock:sum(rows.map(r=>r[f]))])),counts:Object.fromEntries(FIELDS.map(f=>[f,rows.filter(r=>r[f]!==null).length])),variance,variancePct:forecast>0?variance/forecast*100:null,accuracy,mos,stock,amc,status,tone,end};
 }
 export function analyse(rows,{programme='all',start=1,end=8,low=3,high=6}={}){
- const names=[...new Set(rows.filter(r=>programme==='all'||r.programme===programme).map(r=>r.commodity))];
- return names.map(name=>analyseCommodity(rows,name,start,end,low,high)).sort((a,b)=>a.programme.localeCompare(b.programme)||a.name.localeCompare(b.name));
+ const products=new Map(rows.filter(r=>programme==='all'||r.programme===programme).map(r=>[commodityKey(r.commodity,r.programme),r]));
+ return [...products.values()].map(r=>analyseCommodity(rows,r.commodity,start,end,low,high,r.programme)).sort((a,b)=>a.programme.localeCompare(b.programme)||a.name.localeCompare(b.name));
 }
 export function recommendations(c,low=3,high=6){
- const list=[];const add=(title,reason,action,tone='warning')=>list.push({commodity:c.name,title,reason,action,tone});
+ const list=[];const add=(title,reason,action,tone='warning')=>list.push({commodity:c.name,programme:c.programme,title,reason,action,tone});
  if(c.stock===0)add('No closing stock reported',`${MONTHS[c.end-1]} closing stock is zero. This does not establish how long stock was unavailable.`, 'Confirm current availability and incoming orders; assess redistribution or expedited replenishment.','danger');
  else if(c.mos!==null&&c.mos<low)add('Replenishment review',`${c.mos.toFixed(1)} months of stock, below the ${low}-month planning threshold.`, 'Reconcile the supply pipeline and lead time; review near-term replenishment and redistribution.','danger');
  if(c.mos!==null&&c.mos>high)add('Excess-stock review',`${c.mos.toFixed(1)} months of stock, above the ${high}-month planning threshold.`, 'Check expiry dates and committed receipts; assess redistribution and delivery rescheduling.');
