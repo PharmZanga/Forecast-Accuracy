@@ -24,6 +24,8 @@ function monthlyForecast(name){
  return null;
 }
 const state={programme:'all',start:1,end:8,low:3,high:6};
+const view=new URLSearchParams(location.search).get('view');
+if(view){document.querySelectorAll('main>section').forEach(section=>{section.hidden=section.id!==view;});document.querySelectorAll('.sidebar nav a').forEach(link=>link.classList.toggle('active',link.getAttribute('href')?.includes(`view=${view}`)));}
 $('programme').innerHTML='<option value="all">All programmes</option>'+[...PROGRAMMES,'Unclassified'].map(p=>`<option>${esc(p)}</option>`).join('');
 ['start-month','end-month'].forEach(id=>{$(id).innerHTML=MONTHS.map((m,i)=>`<option value="${i+1}">${m.slice(0,3)} 2026</option>`).join('');});$('end-month').value='8';
 function getActions(){return results.flatMap(c=>recommendations(c,state.low,state.high)).sort((a,b)=>({danger:0,warning:1,neutral:2}[a.tone]-{danger:0,warning:1,neutral:2}[b.tone]));}
